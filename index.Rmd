@@ -1,0 +1,161 @@
+---
+title: "Predicting Exercise Motion with Machine Learning"
+author: "Eric W Bucholz"
+date: "August 24, 2018"
+output:
+    html_document:
+        keep_md: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Synopsis:
+
+In this report, analyses are performed on a *Weight Lifting Exercises* (*WLE*) dataset relating to human activity recognition research. Detailed information on this data can be found [HERE][1], and you can also read the authors' paper, [Qualitative Activity Recognition of Weight Lifting Exercises][2]. In their study, six male participants between the ages of 20-28 years were asked to perform bicep curls with 1.25 kg dumbbells in five different ways (both correct and incorrect forms) as is denoted by the *classe* variable in the dataset. The exercises performed are indicated in the dataset as:  
+
+- *Classe A*: Correct form
+- *Classe B*: Throwing elbows forward
+- *Classe C*: Lifting dumbbells halfway
+- *Classe D*: Lowering dumbbells halfway
+- *Classe E*: Throwing hips forward
+
+Each participant wore sensors on the arm, forearm, belt, and dumbbell which recorded specific motions during each dumbbell lift. From this data, machine learning algorithms will be applied to develop a model that can accurately predict what type of bicep curl is being performed based on the motion of the participants' bodies during each exercise. The following sections in this report will detail the development of this prediction algorithm.  
+
+## Data Processing:
+
+The following are the necessary packages that are needed for the analyses performed in this report.  
+
+```{r loadLibraries, echo = T, eval = T, warning = F, message = F}
+library(caret)
+library(ggplot2)
+library(parallel)
+library(doParallel)
+library(xtable)
+```
+
+Before any machine learning can begin, the data is first accessed and read, which is performed in the following code chunk.  
+
+```{r readData, echo = T, eval = T, cache = T}
+data.train <- read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv",
+                 stringsAsFactors = FALSE, na.strings = c("", "NA"))
+data.val <- read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv",
+                    stringsAsFactors = FALSE, na.strings = c("", "NA"))
+```
+
+In these datasets, the training data (*data.train*) is comprised of 19622 observations of 160 variables while the validation data (*data.val*) is comprised of 20 observations with the same variables. The only difference between them is that the *classe* variable has been removed from the validation dataset since the primary goal is to make blind predictions of the *classe* outcome for each of these 20 observations. It is important to explore the dataset in order to determine what data cleaning needs to be performed. The following code chunk generates a graph that illustrates the amount of *NAs* in the dataset.  
+
+```{r figure1, echo = T, eval = T, fig.width = 4.5, fig.height = 3, fig.align = "center"}
+df <- data.frame(x = 1:ncol(data.train),
+                 y = (colSums(is.na(data.train))/nrow(data.train)*100))
+g <- qplot(x, y, data = df, xlab = "Column Number", ylab = "Percentage of NAs (%)")
+print(g)
+```
+***Figure 1.* Plot of the percentage of *NAs* in each column of the *WLE* dataset.**  
+
+In *Figure 1*, it is shown that of the 160 columns in the *WLE* dataset, a large number of them are comprised of nearly 100% *NAs* while the rest do not have any *NAs*. Because of this, the data will be cleaned by subsetting only the columns that do not contain *NA* values. In addition, the first 7 columns of the dataset are participant specific, such as ID, name, and time, which do not relate to the sensor data of interest; therefore, the first 7 columns are omitted from the training, testing, and validation datasets. After these data cleaning steps, the datasets are reduced from 160 to 53 variables. Finally, the *data.train* data frame is partitioned into training and testing datasets comprised of 75% and 25% of the data, respectively. These data cleaning and partitioning steps are performed in the following code chunk.  
+
+```{r dataPartition, echo = T, eval = T}
+ind <- colSums(is.na(data.train)) == 0
+trn.set <- data.train[,ind]; trn.set <- trn.set[,-(1:7)]
+val.set <- data.val[,ind]; val.set <- val.set[,-(1:7)]
+trn.set$classe <- as.factor(trn.set$classe)
+set.seed(32786)
+inTrain <- createDataPartition(trn.set$classe, p = 0.75, list = FALSE)
+training <- trn.set[inTrain,]
+testing <- trn.set[-inTrain,]
+```
+
+## Model Fitting:
+
+Using the training dataset partitioned previously, the *train()* function in the *caret* package is used to generate 3 models using linear discriminant analysis (*LDA*), gradient boosting machine (*GBM*), and random forest (*RF*) methods. For each of these models, *5-fold* cross validation is performed, and in order to maximize computational efficiency, the models are generated using parallel computing. The *LDA*, *GBM*, and *RF* methods were chosen for this report since they represent a range of different machine learning approaches. For each model, the *classe* variable is the outcome with the remaining 52 variables being used as the predictor variables. The following code chunk demonstrates the generation of these 3 models.  
+
+```{r fitModels, echo = T, eval = T, cache = T}
+cluster <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+trnCntrl <- trainControl(method = "cv", number = 5, allowParallel = TRUE)
+model.lda <- train(classe ~ ., method = "lda",
+                   trControl = trnCntrl, data = training)
+model.gbm <- train(classe ~ ., method = "gbm", verbose = F,
+                   trControl = trnCntrl, data = training)
+model.rf <- train(classe ~ ., method = "rf",
+                  trControl = trnCntrl, data = training)
+stopCluster(cluster)
+registerDoSEQ()
+```
+
+From the above prediction models, each model is used to predict the *classe* outcomes for the training and testing datasets. The predictions are then compared with the reference values using the *confusionMatrix()* function in the next code chunk.  
+
+```{r predictions, echo = T, eval = T}
+pred.trn.lda <- predict(model.lda, newdata = training)
+pred.trn.gbm <- predict(model.gbm, newdata = training)
+pred.trn.rf <- predict(model.rf, newdata = training)
+pred.tst.rf <- predict(model.rf, newdata = testing)
+pred.tst.gbm <- predict(model.gbm, newdata = testing)
+pred.tst.lda <- predict(model.lda, newdata = testing)
+cm.trn.lda <- confusionMatrix(pred.trn.lda, training$classe)
+cm.trn.gbm <- confusionMatrix(pred.trn.gbm, training$classe)
+cm.trn.rf <- confusionMatrix(pred.trn.rf, training$classe)
+cm.tst.lda <- confusionMatrix(pred.tst.lda, testing$classe)
+cm.tst.gbm <- confusionMatrix(pred.tst.gbm, testing$classe)
+cm.tst.rf <- confusionMatrix(pred.tst.rf, testing$classe)
+```
+
+### Accuracy of Models:
+
+From the confusion matrices generated previously, the testing dataset predictions versus reference tables for the *LDA*, *GBM*, and *RF* models are provided in *Table 1*, which is generated from the following code chunk.  
+
+```{r conf.mtrx, results = "asis", echo = T, eval = T}
+t.lda <- cm.tst.lda$table; t.gbm <- cm.tst.gbm$table; t.rf <- cm.tst.rf$table
+xt1 <- data.frame(Reference=row.names(t.lda), A.lda=t.lda[1,], B.lda=t.lda[2,],
+                  C.lda=t.lda[3,], D.lda=t.lda[4,], E.lda=t.lda[5,],
+                  A.gbm=t.gbm[1,], B.gbm=t.gbm[2,], C.gbm=t.gbm[3,],
+                  D.gbm=t.gbm[4,], E.gbm=t.gbm[5,], A.rf=t.rf[1,],
+                  B.rf=t.rf[2,], C.rf=t.rf[3,], D.rf=t.rf[4,], E.rf=t.rf[5,])
+xt1 <- xtable(xt1, align = c(rep("c", 17)))
+print(xt1, type = "html", include.rownames = FALSE,
+      html.table.attributes = "align = 'center', border = 0, width = 100%")
+```
+***Table 1.* Confusion matrices for the *LDA*, *GBM*, and *RF* prediction models when applied to the testing dataset. Column names ending in *.lda*, *.gbm*. and *.rf* refer to predictions from the *LDA*, *GBM*, and *RF* models, respectively. The column names indicate what the predicted *classe* is while the row names indicate what the correct *classe* should be from the reference data.**  
+
+In *Table 1*, it is evident that the *LDA* model performs the worst when applied to the testing datset. The *GBM* model performs significantly better, but it appears from the confusion matrix that the *RF* model provides the most accurate predictions. In order to quantify the accuracy of each model, the accuracies for all 3 models when applied to both the training and testing datasets are shown in *Table 2*, which is generated in the following code chunk.  
+
+```{r accuracy, results = "asis", echo = T, eval = T}
+acc.trn <- NULL; acc.tst <- NULL
+acc.trn[1] <- cm.trn.lda$overall["Accuracy"][[1]]
+acc.trn[2] <- cm.trn.gbm$overall["Accuracy"][[1]]
+acc.trn[3] <- cm.trn.rf$overall["Accuracy"][[1]]
+acc.tst[1] <- cm.tst.lda$overall["Accuracy"][[1]]
+acc.tst[2] <- cm.tst.gbm$overall["Accuracy"][[1]]
+acc.tst[3] <- cm.tst.rf$overall["Accuracy"][[1]]
+xt2 <- data.frame(Method = c("LDA", "GBM", "RF"), Training.Set = acc.trn,
+                 Testing.Set = acc.tst)
+xt2 <- xtable(xt2, align = c(rep("c", 4)), digits = c(rep(4,4)))
+print(xt2, type = "html", include.rownames = FALSE,
+      html.table.attributes = "align = 'center', border = 0, width = 35%")
+```
+***Table 2.* Accuracy calculations when using three different models to predict the *classe* outcomes for the training and testing datasets.**  
+
+As suggested from *Table 1*, the data in *Table 2* indicates that the *LDA* model has the lowest accuracy followed by *GBM* with the *RF* model providing the highest accuracy. In order to maximize the accuracy of the desired predictions, the *RF* model will be used to make the final validation predictions in this report. Specifically, the accuracy for the *RF* model when applied to the testing dataset is *99.4%*, which means that we can expect the out of sample error rate to be approximately *0.6%*. A detailed summary of this *RF* model is provided here:  
+
+```{r finalModel, echo = T, eval = T}
+print(model.rf)
+```
+
+## Summary:
+
+The data analysis performed in this report resulted in a machine learning prediction algorithm using the *random forest* method that provides an expected out of sample error rate of *0.6%*. This prediction model is applied to the validation dataset, and these predicted *classe* outcomes are provided in *Table 3*, which is generated from the upcoming code chunk. Based on the expected out of sample error rate, it is expected that at least 19, but probably all 20, of these predictions are correct.  
+
+```{r valPredictions, results = "asis", echo = T, eval = T}
+pred.val.set <- predict(model.rf, val.set)
+xt3 <- data.frame(ID = data.val$X, Participant = data.val$user_name,
+                  Prediction = pred.val.set)
+xt3 <- xtable(xt3, align = c(rep("c", 4)))
+print(xt3, type = "html", include.rownames = FALSE,
+      html.table.attributes = "align = 'center', border = 0, width = 35%")
+```
+***Table 3.* Predictions from the *random forest* model (*model.rf*) for the validation test set which consists of 20 observations that have an unknown *classe* value.**  
+
+[1]: http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har#weight_lifting_exercises "HERE"  
+[2]: http://web.archive.org/web/20170519033209/http://groupware.les.inf.puc-rio.br:80/public/papers/2013.Velloso.QAR-WLE.pdf "Qualitative Activity Recognition of Weight Lifting Exercises"  
